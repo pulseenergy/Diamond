@@ -68,25 +68,28 @@ class NginxLogCollector(diamond.collector.Collector):
         previous_log_suffix = self.config.get("previous_log_suffix")
         try:
             file_size = os.path.getsize(log_file)
-            if log_file not in last_log_bytes:
-                last_log_bytes[log_file] = file_size
+            if log_file not in self.last_log_bytes:
+                self.log.info("NginxLogCollector: First time with file. Next run will track stats from: " + str(file_size));
+                self.last_log_bytes[log_file] = file_size
             else:
-                if last_log_bytes[log_file] > file_size:
+                if self.last_log_bytes[log_file] > file_size:
                     # File rolled over. Read previous file if it exists.
+                    self.log.info("NginxLogCollector: Detected rollover. Reading previous file from: " + str(self.last_log_bytes[log_file]));
                     if previous_log_suffix:
                         try:
                             with open(log_file + previous_log_suffix, "r") as previous_log_file:
-                                previous_log_file.seek(last_log_bytes[log_file])
+                                previous_log_file.seek(self.last_log_bytes[log_file])
                                 for log_line in previous_log_file:
                                     yield log_line
                         except Exception, e:
                             self.log.error("Cannot find previous nginx access log %s: %s", log_file + previous_log_suffix, e)
-                    last_log_bytes[log_file] = 0
+                    self.last_log_bytes[log_file] = 0
                 with open(log_file, "r") as current_log_file:
-                    current_log_file.seek(last_log_bytes[log_file])
+                    self.log.info("NginxLogCollector: Reading log file from: " + str(self.last_log_bytes[log_file]));
+                    current_log_file.seek(self.last_log_bytes[log_file])
                     for log_line in current_log_file:
                         yield log_line
-                    last_log_bytes[log_file] = current_log_file.tell()
+                    self.last_log_bytes[log_file] = current_log_file.tell()
         except Exception, e:
             self.log.error("Cannot find nginx access log %s: %s", log_file, e)
     
@@ -113,15 +116,7 @@ class NginxLogCollector(diamond.collector.Collector):
             response_status_counts = {}
             http_methods_counts = {}
             for access_log in access_logs:
-                if access_log not in self.last_log_bytes:
-                    try:
-                        self.last_log_bytes[access_log] = os.path.getsize(access_log)
-                    except os.error, e:
-                        self.log.error("Cannot find nginx access log %s: %s", access_log, e)
-                    continue
-                log_file = open(access_log, "r")
-                log_file.seek(self.last_log_bytes[access_log])
-                for log_line in log_file:
+                for log_line in self.yield_line(access_log):
                     m = regex.match(log_line)
                     if m is None or len(m.groups()) == 0:
                         continue
@@ -140,7 +135,6 @@ class NginxLogCollector(diamond.collector.Collector):
                     if http_method_regex_index >= 0:
                         http_method = m.groups()[http_method_regex_index]
                         self.increment_dict(http_methods_counts, http_method)
-                self.last_log_bytes[access_log] = log_file.tell()
             self.last_unique_sessions.append(unique_sessions)
             
             self.publish_if_non_zero("requests", count)
