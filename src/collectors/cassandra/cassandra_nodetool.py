@@ -42,14 +42,20 @@ class CassandraNodetoolCollector(diamond.collector.Collector):
         except ValueError:
             return
             
-    def parse_space_seperated(self, lines, prefex, row_headers, skip_lines):
+    def row_header_is_line(self, line_num):
+        return lambda n, line: n == line_num
+            
+    def row_header_matches(self, regex):
+        return lambda n, line: line is not None and regex.match(line) is not None
+            
+    def parse_space_seperated(self, lines, prefex, row_header_fn, skip_lines):
         for row_index in range(len(lines)):
             if row_index in skip_lines:
                 continue
             
             line = lines[row_index]
             words = re.split('\s{2,}', line)
-            if row_index in row_headers:
+            if row_header_fn(row_index, line):
                 column_headers = words[1:]
                 continue
             
@@ -58,11 +64,11 @@ class CassandraNodetoolCollector(diamond.collector.Collector):
                 for i in range(len(column_headers)):
                     yield ".".join((prefex, row_header, column_headers[i])), words[1 + i]
 
-    def publish_tabular_stats(self, node_tool_command, row_headers = [0], skip_lines = []):
+    def publish_tabular_stats(self, node_tool_command, row_header_fn = lambda n, line: n == 0, skip_lines = []):
         nodetool = self.config.get("nodetool")
         host = self.config.get("host")
         lines = subprocess.check_output([nodetool, "-h", host, node_tool_command]).splitlines()
-        for key, value in self.parse_space_seperated(lines, node_tool_command, row_headers, skip_lines):
+        for key, value in self.parse_space_seperated(lines, node_tool_command, row_header_fn, skip_lines):
             self.publish_if_number(key, value)
 
     def publish_columnar_stats(self, node_tool_command, regex="\s*([^:]+\S)\s*:\s+(.*)", value_regexes_by_key={}):
@@ -112,8 +118,8 @@ class CassandraNodetoolCollector(diamond.collector.Collector):
 
     def collect(self):
         try:
-            self.publish_tabular_stats("netstats", skip_lines = [0,1,2], row_headers=[3])
-            self.publish_tabular_stats("tpstats", row_headers=[0,17])
+            self.publish_tabular_stats("netstats", skip_lines = [0,1,2], row_header_fn=self.row_header_is_line(3))
+            self.publish_tabular_stats("tpstats", row_header_fn=self.row_header_matches(re.compile("^(Message type|Pool Name)", re.IGNORECASE)))
             cache_regexes = { ".size": "size (\d+) \(bytes\)", ".capacity": "capacity (\d+) \(bytes\)", ".hits": "(\d+) hits", ".requests": "(\d+) requests", ".recent hit rate": "([\d\.]+) recent hit rate" }
             self.publish_columnar_stats("info", value_regexes_by_key={"Load" : { "_GB": "([\d\.]+) GB" }, "Heap Memory (MB)" : { "": "([\d\.]+) / [\d\.]+" }, "Key Cache" : cache_regexes, "Row Cache" : cache_regexes })
             self.publish_list_stats("cfstats", key_prefex_headers=["Keyspace", "Column Family"], key_includes=["Read Count", "Read Latency", "Write Count", "Write Latency", "SSTable count", "Space used (total)", "Number of Keys (estimate)", "Pending Tasks"], prefex_value_excludes=["OpsCenter", "system"])
